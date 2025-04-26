@@ -1,0 +1,9 @@
+{
+    "name": "pathtracer",
+    "version": "1.0.0",
+    "dependencies": [
+        "glfw3",
+        "vulkan",
+        "vulkan-utility-libraries"
+    ]
+}
