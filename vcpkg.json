@@ -4,6 +4,7 @@
     "dependencies": [
         "glfw3",
         "vulkan",
-        "vulkan-utility-libraries"
+        "vulkan-utility-libraries",
+        "glm"
     ]
 }

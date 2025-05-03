@@ -1,3 +1,4 @@
+#pragma once
 #include "vk_types.hpp"
 
 struct DescriptorLayoutBuilder {

@@ -1,6 +1,7 @@
 #include "vk_initializers.hpp"
 
-VkCommandPoolCreateInfo vkinit::commandPoolCreateInfo(uint32_t queueFamilyIndex, VkCommandPoolCreateFlags flags) {
+VkCommandPoolCreateInfo vkinit::commandPoolCreateInfo(uint32_t queueFamilyIndex, VkCommandPoolCreateFlags flags)
+{
     return {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .flags = flags,
@@ -8,7 +9,8 @@ VkCommandPoolCreateInfo vkinit::commandPoolCreateInfo(uint32_t queueFamilyIndex,
     };
 }
 
-VkCommandBufferAllocateInfo vkinit::commandBufferAllocateInfo(VkCommandPool pool, uint32_t count) {
+VkCommandBufferAllocateInfo vkinit::commandBufferAllocateInfo(VkCommandPool pool, uint32_t count)
+{
     return {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = pool,
@@ -17,14 +19,16 @@ VkCommandBufferAllocateInfo vkinit::commandBufferAllocateInfo(VkCommandPool pool
     };
 }
 
-VkFenceCreateInfo vkinit::fenceCreateInfo(VkFenceCreateFlags flags) {
+VkFenceCreateInfo vkinit::fenceCreateInfo(VkFenceCreateFlags flags)
+{
     return {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
         .flags = flags
     };
 }
 
-VkSemaphoreCreateInfo vkinit::semaphoreCreateInfo(VkSemaphoreCreateFlags flags) {
+VkSemaphoreCreateInfo vkinit::semaphoreCreateInfo(VkSemaphoreCreateFlags flags)
+{
     return {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
         .flags = flags
@@ -33,7 +37,8 @@ VkSemaphoreCreateInfo vkinit::semaphoreCreateInfo(VkSemaphoreCreateFlags flags) 
 
 
 
-VkCommandBufferBeginInfo vkinit::commandBufferBeginInfo(VkCommandBufferUsageFlags flags) {
+VkCommandBufferBeginInfo vkinit::commandBufferBeginInfo(VkCommandBufferUsageFlags flags)
+{
     return {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = flags,
@@ -41,7 +46,8 @@ VkCommandBufferBeginInfo vkinit::commandBufferBeginInfo(VkCommandBufferUsageFlag
 }
 
 
-VkImageSubresourceRange vkinit::imageSubresourceRange(VkImageAspectFlags aspectMask) {
+VkImageSubresourceRange vkinit::imageSubresourceRange(VkImageAspectFlags aspectMask)
+{
     return {
         .aspectMask = aspectMask,
         .levelCount = VK_REMAINING_MIP_LEVELS,
@@ -49,7 +55,8 @@ VkImageSubresourceRange vkinit::imageSubresourceRange(VkImageAspectFlags aspectM
     };
 }
 
-VkSemaphoreSubmitInfo vkinit::semaphoreSubmitInfo(VkPipelineStageFlags2 stageMask, VkSemaphore semaphore) {
+VkSemaphoreSubmitInfo vkinit::semaphoreSubmitInfo(VkPipelineStageFlags2 stageMask, VkSemaphore semaphore)
+{
     return {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
         .semaphore = semaphore,
@@ -59,7 +66,8 @@ VkSemaphoreSubmitInfo vkinit::semaphoreSubmitInfo(VkPipelineStageFlags2 stageMas
 }
 
 
-VkCommandBufferSubmitInfo vkinit::commandBufferSubmitInfo(VkCommandBuffer cmdbuffer) {
+VkCommandBufferSubmitInfo vkinit::commandBufferSubmitInfo(VkCommandBuffer cmdbuffer)
+{
     return {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
         .commandBuffer = cmdbuffer,
@@ -68,7 +76,8 @@ VkCommandBufferSubmitInfo vkinit::commandBufferSubmitInfo(VkCommandBuffer cmdbuf
 
 
 VkSubmitInfo2 vkinit::submitInfo(VkCommandBufferSubmitInfo* cmdBufferSubmitInfo, VkSemaphoreSubmitInfo* signalSemaphoreInfo,
-    VkSemaphoreSubmitInfo* waitSemaphoreInfo) {
+    VkSemaphoreSubmitInfo* waitSemaphoreInfo)
+{
     return {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
         .waitSemaphoreInfoCount = (waitSemaphoreInfo == nullptr) ? 0u : 1u,
@@ -80,7 +89,8 @@ VkSubmitInfo2 vkinit::submitInfo(VkCommandBufferSubmitInfo* cmdBufferSubmitInfo,
     };
 }
 
-VkImageCreateInfo vkinit::imageCreateInfo(VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent) {
+VkImageCreateInfo vkinit::imageCreateInfo(VkFormat format, VkImageUsageFlags usageFlags, VkExtent3D extent)
+{
     return {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
@@ -94,7 +104,8 @@ VkImageCreateInfo vkinit::imageCreateInfo(VkFormat format, VkImageUsageFlags usa
     };
 }
 
-VkImageViewCreateInfo vkinit::imageViewCreateInfo(VkFormat format, VkImage image, VkImageAspectFlags aspectFlags) {
+VkImageViewCreateInfo vkinit::imageViewCreateInfo(VkFormat format, VkImage image, VkImageAspectFlags aspectFlags)
+{
     VkImageViewCreateInfo createInfo{
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = image,
@@ -106,4 +117,47 @@ VkImageViewCreateInfo vkinit::imageViewCreateInfo(VkFormat format, VkImage image
     createInfo.subresourceRange.aspectMask = aspectFlags;
 
     return createInfo;
+}
+
+VkRenderingAttachmentInfo vkinit::attachmentInfo(VkImageView view, VkClearValue* clear, VkImageLayout layout)
+{
+    return {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = view,
+        .imageLayout = layout,
+        .loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = clear ? *clear : VkClearValue{}
+    };
+}
+
+VkRenderingInfo vkinit::renderingInfo(VkExtent2D renderExtent, VkRenderingAttachmentInfo* colorAttachment, 
+    VkRenderingAttachmentInfo* depthAttachment)
+{
+    return {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea = VkRect2D { VkOffset2D { 0,0 }, renderExtent },
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = colorAttachment,
+        .pDepthAttachment = depthAttachment,
+    };
+}
+
+VkPipelineShaderStageCreateInfo vkinit::pipelineShaderStageCreateInfo(VkShaderStageFlagBits stage, VkShaderModule shader,
+    const char* entry)
+{
+    return {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = stage,
+        .module = shader,
+        .pName = entry
+    };
+}
+
+VkPipelineLayoutCreateInfo vkinit::pipelineLayoutCreateInfo()
+{
+    return{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+    };
 }

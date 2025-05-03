@@ -21,10 +21,11 @@ endif()
 
 # dependencies
 find_package(Vulkan REQUIRED COMPONENTS glslc)
-
+find_package(glm REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 
 add_subdirectory(vendor/vk-bootstrap)
+add_subdirectory(vendor/fastgltf)
 
 # compile shaders
 find_program(GLSLC glslc)
@@ -52,7 +53,7 @@ foreach(SHADER ${SHADER_SOURCES})
     add_custom_command(
         OUTPUT ${OUTPUT_FILE}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/shaders"
-        COMMAND ${GLSLC} ${SHADER} -o ${OUTPUT_FILE}
+        COMMAND ${GLSLC} ${SHADER} -o ${OUTPUT_FILE} --target-env=vulkan1.3
         DEPENDS ${SHADER}
         COMMENT "Compiling ${SHADER}..." 
     )
@@ -61,18 +62,21 @@ endforeach()
 
 add_custom_target(compile_shaders ALL DEPENDS ${SHADER_BINARIES})
 
+set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/vendor/imgui)
 set(SOURCES 
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_demo.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+
     src/main.cpp 
-    src/engine.hpp 
     src/engine.cpp 
-    src/vk_images.hpp 
     src/vk_images.cpp 
-    src/vk_initializers.hpp 
     src/vk_initializers.cpp 
-    src/vk_types.hpp
-    src/vk_descriptors.hpp
     src/vk_descriptors.cpp
-    src/vk_pipelines.hpp
     src/vk_pipelines.cpp
 )
 
@@ -81,6 +85,8 @@ add_dependencies(${PROJECT_NAME} compile_shaders)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     vendor/vk_mem_alloc
+    ${IMGUI_DIR}
+    ${IMGUI_DIR}/backends
     ${CMAKE_CURRENT_BINARY_DIR}/shaders
 )
 
@@ -88,4 +94,5 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Vulkan::Vulkan
     glfw
     vk-bootstrap
+    fastgltf
 )

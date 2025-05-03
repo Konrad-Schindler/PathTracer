@@ -6,6 +6,20 @@
 #include "vk_types.hpp"
 #include "vk_descriptors.hpp"
 
+struct ComputePushConstants {
+	glm::vec4 data1;
+	glm::vec4 data2;
+	glm::vec4 data3;
+	glm::vec4 data4;
+};
+
+struct ComputeEffect {
+	const char* name;
+	VkPipeline pipeline;
+	VkPipelineLayout layout;
+	ComputePushConstants data;
+};
+
 struct DeletionQueue {
 	std::deque<std::function<void()>> deletors;
 
@@ -69,6 +83,18 @@ struct Engine {
 	VkPipeline pipeline;
 	VkPipelineLayout pipelineLayout;
 
+	VkPipelineLayout trianglePipelineLayout;
+	VkPipeline trianglePipeline;
+
+	std::vector<ComputeEffect> backgroundEffects;
+	int currentBackgroundEffect{ 0 };
+
+	VkFence immediateFence;
+	VkCommandBuffer immediateCmdBuffer;
+	VkCommandPool immediateCommandPool;
+
+	GPUMeshBuffers rectangle;
+
 	static Engine& Get();
 
 	void init();
@@ -77,6 +103,7 @@ struct Engine {
 	void run();
 	void initCommands();
 	FrameData& currentFrame();
+	void immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function);
 
 private:
 	void initWindow();
@@ -88,5 +115,13 @@ private:
 	void initDescriptors();
 	void initPipelines();
 	void initBackgroundPipelines();
+	void initImgui();
+	void initDefaultData();
 	void drawBackground(VkCommandBuffer cmdBuffer);
+	void drawImGui(VkCommandBuffer cmdBuffer, VkImageView targetImageView);
+	void drawGeometry(VkCommandBuffer cmdBuffer);
+	void initTrianglePipeline();
+	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
+	void destroyBuffer(const AllocatedBuffer& buffer);
+	GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
 };
