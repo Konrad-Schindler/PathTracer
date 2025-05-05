@@ -23,10 +23,13 @@ struct PipelineBuilder {
 	void setPolygonMode(VkPolygonMode mode);
 	void setCullMode(VkCullModeFlags cullMode, VkFrontFace frontFace);
 	void setMultisamplingNone();
-	void disableBlending();
 	void setColorAttachmentFormat(VkFormat format);
 	void setDepthFormat(VkFormat format);
+	void enableDepthtest(bool depthWriteEnable, VkCompareOp op);
 	void disableDepthtest();
+	void enableBlendingAdditive();
+	void enableBlendingAlphablend();
+	void disableBlending();
 };
 
 

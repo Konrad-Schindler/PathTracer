@@ -78,7 +78,7 @@ set(SOURCES
     src/vk_initializers.cpp 
     src/vk_descriptors.cpp
     src/vk_pipelines.cpp
-)
+    src/vk_loader.cpp)
 
 add_executable(${PROJECT_NAME} ${SOURCES})
 add_dependencies(${PROJECT_NAME} compile_shaders)

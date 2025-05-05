@@ -5,6 +5,7 @@
 
 #include "vk_types.hpp"
 #include "vk_descriptors.hpp"
+#include "vk_loader.hpp"
 
 struct ComputePushConstants {
 	glm::vec4 data1;
@@ -46,9 +47,13 @@ struct FrameData {
 constexpr unsigned int FRAME_OVERLAP = 2;
 
 struct Engine {
+	bool resizeRequested = false;
 	bool initialized = false;
 	int frameNumber{ 0 };
+	float renderScale = 1.f;
+
 	VkExtent2D windowExtent{ 800, 800 };
+	VkExtent2D drawExtent;
 
 	GLFWwindow* window;
 
@@ -74,7 +79,7 @@ struct Engine {
 
 	VmaAllocator allocator;
 	AllocatedImage drawImage;
-	VkExtent2D drawExtent;
+	AllocatedImage depthImage;
 
 	DescriptorAllocator globalDescriptorAllocator;
 	VkDescriptorSet drawImageDescriptors;
@@ -95,6 +100,8 @@ struct Engine {
 
 	GPUMeshBuffers rectangle;
 
+	std::vector<std::shared_ptr<MeshAsset>> testMeshes;
+
 	static Engine& Get();
 
 	void init();
@@ -104,11 +111,14 @@ struct Engine {
 	void initCommands();
 	FrameData& currentFrame();
 	void immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function);
+	GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
 
 private:
 	void initWindow();
 	void initVulkan();
+	void initSwapchain();
 	void createSwapchain(int width, int height);
+	void resizeSwapchain();
 	void destroySwapchain();
 	void initSyncStructures();
 	void initAllocator();
@@ -123,5 +133,4 @@ private:
 	void initTrianglePipeline();
 	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
 	void destroyBuffer(const AllocatedBuffer& buffer);
-	GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
 };

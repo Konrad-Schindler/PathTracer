@@ -131,6 +131,17 @@ VkRenderingAttachmentInfo vkinit::attachmentInfo(VkImageView view, VkClearValue*
     };
 }
 
+VkRenderingAttachmentInfo vkinit::depthAttachmentInfo(VkImageView view, VkImageLayout layout)
+{
+    return{
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = view,
+        .imageLayout = layout,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+    };
+}
+
 VkRenderingInfo vkinit::renderingInfo(VkExtent2D renderExtent, VkRenderingAttachmentInfo* colorAttachment, 
     VkRenderingAttachmentInfo* depthAttachment)
 {
