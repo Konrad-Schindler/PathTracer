@@ -16,7 +16,7 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/transform.hpp>
 
-constexpr bool enableValidationLayers = true;
+constexpr bool enableValidationLayers = false;
 const uint32_t WINDOW_WIDTH = 600;
 const uint32_t WINDOW_HEIGHT = 600;
 
@@ -52,6 +52,17 @@ void Engine::init()
 
     initDefaultData();
 
+    camera.velocity = glm::vec3(0);
+    camera.position = glm::vec3(0, 0, 5);
+    camera.pitch = 0;
+    camera.yaw = 0;
+
+    std::string filePath = { "..\\..\\assets\\structure.glb" };
+    auto file = loadGLTF(this, filePath);
+
+    assert(file.has_value());
+    loadedScenes["structure"] = *file;
+
     initialized = true;
 }
 
@@ -70,6 +81,8 @@ void Engine::initWindow()
 
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, requestSwapchainResize);
+
+    camera.configureGLFW(window);
 }
 
 void Engine::initVulkan()
@@ -148,7 +161,7 @@ void Engine::initSwapchain()
     VkImageCreateInfo rimgInfo = vkinit::imageCreateInfo(drawImage.imageFormat, drawImageUsages, drawImageExtent);
 
     VmaAllocationCreateInfo rimgAllocinfo{
-        .usage = VMA_MEMORY_USAGE_GPU_ONLY,
+        .usage = VMA_MEMORY_USAGE_AUTO,
         .requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
     };
     vmaCreateImage(allocator, &rimgInfo, &rimgAllocinfo, &drawImage.image, &drawImage.allocation, nullptr);
@@ -174,7 +187,7 @@ void Engine::initSwapchain()
 
         vkDestroyImageView(device, depthImage.imageView, nullptr);
         vmaDestroyImage(allocator, depthImage.image, depthImage.allocation);
-        });
+    });
 }
 
 void Engine::createSwapchain(int width, int height)
@@ -250,6 +263,8 @@ void Engine::destroySwapchain()
 void Engine::cleanup()
 {
     vkDeviceWaitIdle(device);
+
+    loadedScenes.clear();
     
     for (int i = 0; i < FRAME_OVERLAP; i++) {
         vkDestroyCommandPool(device, frames[i].commandPool, nullptr);
@@ -261,14 +276,12 @@ void Engine::cleanup()
         frames[i].deletionQueue.flush();
     }
 
-    for (auto& mesh : testMeshes) {
-        destroyBuffer(mesh->meshBuffers.indexBuffer);
-        destroyBuffer(mesh->meshBuffers.vertexBuffer);
-    }
+    metalRoughMaterial.clearResources(device);
 
     deletionQueue.flush();
 
     destroySwapchain();
+
     vkDestroySurfaceKHR(instance, surface, nullptr);
     vkDestroyDevice(device, nullptr);
     vkb::destroy_debug_utils_messenger(instance, debugMessenger);
@@ -282,8 +295,13 @@ void Engine::cleanup()
 
 void Engine::draw()
 {
+    updateScene();
+
     VK_CHECK(vkWaitForFences(device, 1, &currentFrame().renderFence, true, 1'000'000'000));
+
     currentFrame().deletionQueue.flush();
+    currentFrame().frameDescriptors.clearPools(device);
+
     VK_CHECK(vkResetFences(device, 1, &currentFrame().renderFence));
 
     uint32_t swapchainImageIndex;
@@ -352,6 +370,8 @@ void Engine::draw()
 void Engine::run()
 {
     while (!glfwWindowShouldClose(window)) {
+        auto start = std::chrono::system_clock::now();
+        
         glfwPollEvents();
 
         // TODO Stop rendering on window minimizing
@@ -364,7 +384,16 @@ void Engine::run()
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        if (ImGui::Begin("background")) {
+        if (ImGui::Begin("Stats")) {
+            ImGui::Text("frame time %f ms", stats.frametime);
+            ImGui::Text("draw time %f ms", stats.meshDrawTime);
+            ImGui::Text("update time %f ms", stats.sceneUpdateTime);
+            ImGui::Text("triangles %i", stats.triangleCount);
+            ImGui::Text("draw calls %i", stats.drawCallCount);
+        }
+        ImGui::End();
+
+        /*if (ImGui::Begin("background")) {
             ImGui::SliderFloat("Render Scale", &renderScale, 0.3f, 1.f);
 
             ComputeEffect& selected = backgroundEffects[currentBackgroundEffect];
@@ -378,11 +407,15 @@ void Engine::run()
             ImGui::InputFloat4("data3", (float*)&selected.data.data3);
             ImGui::InputFloat4("data4", (float*)&selected.data.data4);
         }
-        ImGui::End();
+        ImGui::End();*/
 
         ImGui::Render();
 
         draw();
+
+        auto end = std::chrono::system_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        stats.frametime = elapsed.count() / 1000.f;
     }
 }
 
@@ -445,42 +478,63 @@ void Engine::initAllocator()
 
 void Engine::initDescriptors()
 {
-    std::vector<DescriptorAllocator::PoolSizeRatio> sizes = {
+    std::vector<DescriptorAllocator::PoolSizeRatio> sizes{
         { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}
     };
-
-    globalDescriptorAllocator.initPool(device, 10, sizes);
+    globalDescriptorAllocator.init(device, 10, sizes);
     
-    DescriptorLayoutBuilder builder;
-    builder.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-    drawImageDescriptorLayout = builder.build(device, VK_SHADER_STAGE_COMPUTE_BIT);
-    drawImageDescriptors = globalDescriptorAllocator.allocate(device, drawImageDescriptorLayout);
+    {
+        DescriptorLayoutBuilder builder;
+        builder.addBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+        drawImageDescriptorLayout = builder.build(device, VK_SHADER_STAGE_COMPUTE_BIT);
+        drawImageDescriptors = globalDescriptorAllocator.allocate(device, drawImageDescriptorLayout);
+    }
 
-    VkDescriptorImageInfo imgInfo{
-        .imageView = drawImage.imageView,
-        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-    };
+    {
+        DescriptorLayoutBuilder builder;
+        builder.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+        gpuSceneDataDescriptorLayout = builder.build(device, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+    }
 
-    VkWriteDescriptorSet drawImageWrite{
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = drawImageDescriptors,
-        .descriptorCount = 1,
-        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-        .pImageInfo = &imgInfo
-    };
+    {
+        DescriptorLayoutBuilder builder;
+        builder.addBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+        singleImageDescriptorLayout = builder.build(device, VK_SHADER_STAGE_FRAGMENT_BIT);
+    }
 
-    vkUpdateDescriptorSets(device, 1, &drawImageWrite, 0, nullptr);
+    DescriptorWriter writer;
+    writer.writeImage(0, drawImage.imageView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+    writer.updateSet(device, drawImageDescriptors);
 
     deletionQueue.push([&]() {
-        globalDescriptorAllocator.destroyPool(device);
+        globalDescriptorAllocator.destroyPools(device);
         vkDestroyDescriptorSetLayout(device, drawImageDescriptorLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, gpuSceneDataDescriptorLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device, singleImageDescriptorLayout, nullptr);
     });
+
+    for (int i = 0; i < FRAME_OVERLAP; i++) {
+        std::vector<DescriptorAllocator::PoolSizeRatio> frameSizes{
+            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 },
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 },
+        };
+
+        frames[i].frameDescriptors = DescriptorAllocator{};
+        frames[i].frameDescriptors.init(device, 1000, frameSizes);
+
+        deletionQueue.push([&, i]() {
+            frames[i].frameDescriptors.destroyPools(device);
+        });
+    }
 }
 
 void Engine::initPipelines()
 {
     initBackgroundPipelines();
-    initTrianglePipeline();
+
+    metalRoughMaterial.buildPipelines(this);
 }
 
 void Engine::initBackgroundPipelines()
@@ -549,9 +603,10 @@ void Engine::initBackgroundPipelines()
 
     vkDestroyShaderModule(device, gradientShader, nullptr);
     vkDestroyShaderModule(device, computeDrawShader, nullptr);
-    deletionQueue.push([&]() {
+    deletionQueue.push([=]() {
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        vkDestroyPipeline(device, pipeline, nullptr);
+        vkDestroyPipeline(device, gradient.pipeline, nullptr);
+        vkDestroyPipeline(device, box.pipeline, nullptr);
     });
 }
 
@@ -615,36 +670,79 @@ void Engine::initImgui()
 
 void Engine::initDefaultData()
 {
-    std::array<Vertex, 4> rectVertices{};
+    // Default Textures
 
-    rectVertices[0].position = { 0.5, -0.5, 0 };
-    rectVertices[1].position = { 0.5, 0.5, 0 };
-    rectVertices[2].position = { -0.5, -0.5, 0 };
-    rectVertices[3].position = { -0.5, 0.5, 0 };
+    uint32_t white = glm::packUnorm4x8(glm::vec4(1, 1, 1, 1));
+    uint32_t grey = glm::packUnorm4x8(glm::vec4(0.66f, 0.66f, 0.66f, 1));
+    uint32_t black = glm::packUnorm4x8(glm::vec4(0, 0, 0, 1));
+    uint32_t magenta = glm::packUnorm4x8(glm::vec4(1, 0, 1, 1));
 
-    rectVertices[0].color = { 0, 0, 0, 1 };
-    rectVertices[1].color = { 0.5, 0.5, 0.5 , 1 };
-    rectVertices[2].color = { 1, 0, 0, 1 };
-    rectVertices[3].color = { 0, 1, 0, 1 };
+    whiteImage = createImage((void*)&white, VkExtent3D{ 1, 1, 1 }, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+    greyImage = createImage((void*)&grey, VkExtent3D{ 1, 1, 1 }, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+    blackImage = createImage((void*)&black, VkExtent3D{ 1, 1, 1 }, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
 
-    std::array<uint32_t, 6> rectIndices{};
+    std::array<uint32_t, 16 * 16> pixels;
+    for (int x = 0; x < 16; x++) {
+        for (int y = 0; y < 16; y++) {
+            pixels[16 * y + x] = ((x % 2) ^ (y % 2)) ? magenta : black;
+        }
+    }
+    missingTextureImage = createImage(pixels.data(), VkExtent3D{16, 16, 1}, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
 
-    rectIndices[0] = 0;
-    rectIndices[1] = 1;
-    rectIndices[2] = 2;
+    VkSamplerCreateInfo samplerInfo{
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_NEAREST,
+        .minFilter = VK_FILTER_NEAREST,
+    };
+    vkCreateSampler(device, &samplerInfo, nullptr, &defaultSamplerNearest);
 
-    rectIndices[3] = 2;
-    rectIndices[4] = 1;
-    rectIndices[5] = 3;
-
-    rectangle = uploadMesh(rectIndices, rectVertices);
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    vkCreateSampler(device, &samplerInfo, nullptr, &defaultSamplerLinear);
 
     deletionQueue.push([&]() {
-        destroyBuffer(rectangle.indexBuffer);
-        destroyBuffer(rectangle.vertexBuffer);
+        vkDestroySampler(device, defaultSamplerNearest, nullptr);
+        vkDestroySampler(device, defaultSamplerLinear, nullptr);
+        destroyImage(whiteImage);
+        destroyImage(greyImage);
+        destroyImage(blackImage);
+        destroyImage(missingTextureImage);
     });
 
-    testMeshes = loadGltfMeshes(*this, "..\\..\\assets\\monkey.glb").value();
+    // Default Material
+
+    GLTFMetallicRoughness::MaterialResources materialResources{
+        .colorImage = whiteImage,
+        .colorSampler = defaultSamplerLinear,
+        .metalRoughImage = whiteImage,
+        .metalRoughSampler = defaultSamplerLinear,
+    };
+
+    AllocatedBuffer materialConstants = createBuffer(sizeof(GLTFMetallicRoughness::MaterialConstants), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+
+    auto sceneUniformData = (GLTFMetallicRoughness::MaterialConstants*)materialConstants.allocation->GetMappedData();
+    sceneUniformData->colorFactors = glm::vec4(1, 1, 1, 1);
+    sceneUniformData->metalRoughFactors = glm::vec4(1, 0.5, 0, 0);
+
+    deletionQueue.push([=]() {
+        destroyBuffer(materialConstants);
+    });
+
+    materialResources.dataBuffer = materialConstants.buffer;
+    defaultData = metalRoughMaterial.writeMaterial(device, MaterialPass::Opaque, materialResources, globalDescriptorAllocator);
+
+    for (auto& mesh : testMeshes) {
+        std::shared_ptr<MeshNode> newNode = std::make_shared<MeshNode>();
+        newNode->mesh = mesh;
+        newNode->localTransform = glm::mat4{ 1.f };
+        newNode->globalTransform = glm::mat4{ 1.f };
+
+        for (auto& surface : newNode->mesh->surfaces) {
+            surface.material = std::make_shared<GLTFMaterial>(defaultData);
+        }
+
+        loadedNodes[mesh->name] = std::move(newNode);
+    }
 }
 
 void Engine::drawBackground(VkCommandBuffer cmdBuffer)
@@ -674,28 +772,30 @@ void Engine::drawImGui(VkCommandBuffer cmdBuffer, VkImageView targetImageView)
 
 void Engine::drawGeometry(VkCommandBuffer cmdBuffer)
 {
+    stats.drawCallCount = 0;
+    stats.triangleCount = 0;
+    auto start = std::chrono::system_clock::now();
+
+    AllocatedBuffer gpuSceneDataBuffer = createBuffer(sizeof(GPUSceneData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+
+    currentFrame().deletionQueue.push([=]() {
+        destroyBuffer(gpuSceneDataBuffer);
+    });
+
+    GPUSceneData* sceneUniformData = (GPUSceneData*)gpuSceneDataBuffer.allocation->GetMappedData();
+    *sceneUniformData = sceneData;
+
+    VkDescriptorSet globalDescriptor = currentFrame().frameDescriptors.allocate(device, gpuSceneDataDescriptorLayout);
+
+    DescriptorWriter writer;
+    writer.writeBuffer(0, gpuSceneDataBuffer.buffer, sizeof(GPUSceneData), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    writer.updateSet(device, globalDescriptor);
+
     VkRenderingAttachmentInfo colorAttachment = vkinit::attachmentInfo(drawImage.imageView, nullptr);
     VkRenderingAttachmentInfo depthAttachment = vkinit::depthAttachmentInfo(depthImage.imageView, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
 
     VkRenderingInfo renderInfo = vkinit::renderingInfo(drawExtent, &colorAttachment, &depthAttachment);
     vkCmdBeginRendering(cmdBuffer, &renderInfo);
-
-    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, trianglePipeline);
-
-    glm::mat4 view = glm::translate(glm::vec3(0, 0, -3));
-    glm::mat4 projection = glm::perspectiveZO(glm::radians(70.f), (float)drawExtent.width / (float)drawExtent.height, 10000.f, 0.1f);
-
-    // flip y direction as Vulkan y is down.
-    projection[1][1] *= -1;
-
-    GPUDrawPushConstants pushConstants{
-        .worldMatrix = projection * view,
-        .vertexBuffer = testMeshes[0]->meshBuffers.vertexBufferAddress,
-    };
-
-    vkCmdPushConstants(cmdBuffer, trianglePipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, 
-        sizeof(GPUDrawPushConstants), &pushConstants);
-    vkCmdBindIndexBuffer(cmdBuffer, testMeshes[0]->meshBuffers.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
     VkViewport viewport{
         .width = static_cast<float>(drawExtent.width),
@@ -704,57 +804,46 @@ void Engine::drawGeometry(VkCommandBuffer cmdBuffer)
     };
     vkCmdSetViewport(cmdBuffer, 0, 1, &viewport);
 
-    VkRect2D scissor{};
-    scissor.extent.width = drawExtent.width;
-    scissor.extent.height = drawExtent.height;
+    VkRect2D scissor{
+        .extent{
+            .width = drawExtent.width,
+            .height = drawExtent.height,
+        }
+    };
     vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
 
-    vkCmdDrawIndexed(cmdBuffer, testMeshes[0]->surfaces[0].count, 1, testMeshes[0]->surfaces[0].startIndex, 0, 0);
-    vkCmdEndRendering(cmdBuffer);
-}
+    auto draw = [&](const RenderObject& toDraw) {
+        vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, toDraw.material->pipeline->pipeline);
+        vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, toDraw.material->pipeline->layout, 0, 1, &globalDescriptor, 0, nullptr);
+        vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, toDraw.material->pipeline->layout, 1, 1, &toDraw.material->materialSet, 0, nullptr);
 
-void Engine::initTrianglePipeline()
-{
-    VkShaderModule vertexShader;
-    if (!vkutil::loadShaderModule("shaders/triangle_vert.spv", device, vertexShader)) {
-        std::cout << "Error building triangle vertex shader!" << std::endl;
-    }
-    VkShaderModule fragmentShader;
-    if (!vkutil::loadShaderModule("shaders/triangle_frag.spv", device, fragmentShader)) {
-        std::cout << "Error building triangle fragment shader!" << std::endl;
-    }
+        vkCmdBindIndexBuffer(cmdBuffer, toDraw.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-    VkPushConstantRange bufferRange{
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-        .size = sizeof(GPUDrawPushConstants),
+        GPUDrawPushConstants pushConstants{
+            .worldMatrix = toDraw.transform,
+            .vertexBuffer = toDraw.vertexBufferAddress,
+        };
+        vkCmdPushConstants(cmdBuffer, toDraw.material->pipeline->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &pushConstants);
+
+        vkCmdDrawIndexed(cmdBuffer, toDraw.indexCount, 1, toDraw.firstIndex, 0, 0);
+
+        stats.drawCallCount++;
+        stats.triangleCount += toDraw.indexCount / 3;
     };
 
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo = vkinit::pipelineLayoutCreateInfo();
-    pipelineLayoutInfo.pPushConstantRanges = &bufferRange;
-    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    for (const RenderObject& surface : mainDrawContext.opaqueSurfaces) {
+        draw(surface);
+    }
 
-    VK_CHECK(vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &trianglePipelineLayout));
+    for (const RenderObject& surface : mainDrawContext.transparentSurfaces) {
+        draw(surface);
+    }
+    
+    vkCmdEndRendering(cmdBuffer);
 
-    PipelineBuilder pipelineBuilder;
-    pipelineBuilder.pipelineLayout = trianglePipelineLayout;
-    pipelineBuilder.setShaders(vertexShader, fragmentShader);
-    pipelineBuilder.setInputTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-    pipelineBuilder.setPolygonMode(VK_POLYGON_MODE_FILL);
-    pipelineBuilder.setMultisamplingNone();
-    pipelineBuilder.enableBlendingAdditive();
-    pipelineBuilder.enableDepthtest(true, VK_COMPARE_OP_GREATER_OR_EQUAL);
-    pipelineBuilder.setColorAttachmentFormat(drawImage.imageFormat);
-    pipelineBuilder.setDepthFormat(depthImage.imageFormat);
-
-    trianglePipeline = pipelineBuilder.build(device);
-
-    vkDestroyShaderModule(device, vertexShader, nullptr);
-    vkDestroyShaderModule(device, fragmentShader, nullptr);
-
-    deletionQueue.push([&]() {
-        vkDestroyPipelineLayout(device, trianglePipelineLayout, nullptr);
-        vkDestroyPipeline(device, trianglePipeline, nullptr);
-    });
+    auto end = std::chrono::system_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    stats.meshDrawTime = elapsed.count() / 1000.f;
 }
 
 AllocatedBuffer Engine::createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage)
@@ -766,8 +855,8 @@ AllocatedBuffer Engine::createBuffer(size_t allocSize, VkBufferUsageFlags usage,
     };
 
     VmaAllocationCreateInfo vmaallocInfo{
-        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT,
-        .usage = memoryUsage,
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+        .usage = memoryUsage
     };
 
     AllocatedBuffer buffer;
@@ -780,6 +869,104 @@ void Engine::destroyBuffer(const AllocatedBuffer& buffer)
     vmaDestroyBuffer(allocator, buffer.buffer, buffer.allocation);
 }
 
+AllocatedImage Engine::createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped)
+{
+    AllocatedImage newImage{
+        .imageExtent = size,
+        .imageFormat = format,
+    };
+
+    VkImageCreateInfo imgInfo = vkinit::imageCreateInfo(format, usage, size);
+    if (mipmapped) {
+        imgInfo.mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(size.width, size.height))));
+    }
+
+    VmaAllocationCreateInfo allocInfo{
+        .usage = VMA_MEMORY_USAGE_AUTO,
+        .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+    };
+
+    VK_CHECK(vmaCreateImage(allocator, &imgInfo, &allocInfo, &newImage.image, &newImage.allocation, nullptr));
+
+    VkImageAspectFlags aspectFlag = VK_IMAGE_ASPECT_COLOR_BIT;
+    if (format == VK_FORMAT_D32_SFLOAT) {
+        aspectFlag = VK_IMAGE_ASPECT_DEPTH_BIT;
+    }
+
+    VkImageViewCreateInfo viewInfo = vkinit::imageViewCreateInfo(format, newImage.image, aspectFlag);
+    viewInfo.subresourceRange.levelCount = imgInfo.mipLevels;
+
+    VK_CHECK(vkCreateImageView(device, &viewInfo, nullptr, &newImage.imageView));
+
+    return newImage;
+}
+
+AllocatedImage Engine::createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped)
+{
+    size_t dataSize = size.depth * size.width * size.height * 4;
+    AllocatedBuffer uploadBuffer = createBuffer(dataSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+
+    memcpy(uploadBuffer.info.pMappedData, data, dataSize);
+
+    usage = usage | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    AllocatedImage newImage = createImage(size, format, usage, mipmapped);
+
+    immediateSubmit([&](VkCommandBuffer cmd) {
+        vkutil::transitionImage(cmd, newImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+        VkBufferImageCopy copyRegion{
+            .imageSubresource{
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .layerCount = 1,
+            },
+            .imageExtent = size
+        };
+
+        vkCmdCopyBufferToImage(cmd, uploadBuffer.buffer, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
+
+        vkutil::transitionImage(cmd, newImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    });
+
+    destroyBuffer(uploadBuffer);
+
+    return newImage;
+}
+
+void Engine::destroyImage(const AllocatedImage& image)
+{
+    vkDestroyImageView(device, image.imageView, nullptr);
+    vmaDestroyImage(allocator, image.image, image.allocation);
+}
+
+void Engine::updateScene()
+{
+    auto start = std::chrono::system_clock::now();
+
+    mainDrawContext.opaqueSurfaces.clear();
+    mainDrawContext.transparentSurfaces.clear();
+
+    camera.update();
+
+    sceneData.view = camera.viewMatrix();
+
+    float aspectRatio = (float)windowExtent.width / (float)windowExtent.height;
+    sceneData.projection = glm::perspectiveZO(glm::radians(70.f), aspectRatio, 10000.f, 0.1f);
+    // flip y direction as Vulkan y is down
+    sceneData.projection[1][1] *= -1;
+
+    sceneData.viewprojection = sceneData.projection * sceneData.view;
+
+    sceneData.ambientColor = glm::vec4(.1f);
+    sceneData.sunlightColor = glm::vec4(1.f);
+    sceneData.sunlightDrection = glm::vec4(0, 1, 0.5, 1.f);
+
+    loadedScenes["structure"]->draw(glm::mat4{ 1.f }, mainDrawContext);
+
+    auto end = std::chrono::system_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    stats.sceneUpdateTime = elapsed.count() / 1000.f;
+}
+
 GPUMeshBuffers Engine::uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices)
 {
     const size_t vertexBufferSize = vertices.size() * sizeof(Vertex);
@@ -787,8 +974,7 @@ GPUMeshBuffers Engine::uploadMesh(std::span<uint32_t> indices, std::span<Vertex>
     
     GPUMeshBuffers newSurface;
     newSurface.vertexBuffer = createBuffer(vertexBufferSize,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-        VMA_MEMORY_USAGE_GPU_ONLY);
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
 
     VkBufferDeviceAddressInfo deviceAddressInfo{
         .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
@@ -796,12 +982,9 @@ GPUMeshBuffers Engine::uploadMesh(std::span<uint32_t> indices, std::span<Vertex>
     };
     newSurface.vertexBufferAddress = vkGetBufferDeviceAddress(device, &deviceAddressInfo);
 
-    newSurface.indexBuffer = createBuffer(indexBufferSize,
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        VMA_MEMORY_USAGE_GPU_ONLY);
+    newSurface.indexBuffer = createBuffer(indexBufferSize,VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
 
-    AllocatedBuffer staging = createBuffer(vertexBufferSize + indexBufferSize,
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
+    AllocatedBuffer staging = createBuffer(vertexBufferSize + indexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 
     void* data = staging.allocation->GetMappedData();
     memcpy(data, vertices.data(), vertexBufferSize);
@@ -825,4 +1008,125 @@ GPUMeshBuffers Engine::uploadMesh(std::span<uint32_t> indices, std::span<Vertex>
     destroyBuffer(staging);
 
     return newSurface;
+}
+
+void GLTFMetallicRoughness::buildPipelines(Engine* engine)
+{
+    VkShaderModule meshVertexShader;
+    if (!vkutil::loadShaderModule("shaders/mesh_vert.spv", engine->device, meshVertexShader)) {
+        std::cout << "Error building the vertex shader module!" << std::endl;
+    };
+
+    VkShaderModule meshFragmentShader;
+    if (!vkutil::loadShaderModule("shaders/mesh_frag.spv", engine->device, meshFragmentShader)) {
+        std::cout << "Error building the fragment shader module!" << std::endl;
+    };
+
+    VkPushConstantRange matrixRange{
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .size = sizeof(GPUDrawPushConstants),
+    };
+
+    DescriptorLayoutBuilder layoutBuilder;
+    layoutBuilder.addBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    layoutBuilder.addBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    layoutBuilder.addBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+
+    materialLayout = layoutBuilder.build(engine->device, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    VkDescriptorSetLayout layouts[] = {
+        engine->gpuSceneDataDescriptorLayout,
+        materialLayout
+    };
+
+    VkPipelineLayoutCreateInfo layoutInfo = vkinit::pipelineLayoutCreateInfo();
+    layoutInfo.setLayoutCount = 2;
+    layoutInfo.pSetLayouts = layouts;
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &matrixRange;
+
+    VkPipelineLayout newLayout;
+    VK_CHECK(vkCreatePipelineLayout(engine->device, &layoutInfo, nullptr, &newLayout));
+
+    opaquePipeline.layout = newLayout;
+    transparentPipeline.layout = newLayout;
+
+    PipelineBuilder pipelineBuilder;
+    pipelineBuilder.setShaders(meshVertexShader, meshFragmentShader);
+    pipelineBuilder.setInputTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+    pipelineBuilder.setPolygonMode(VK_POLYGON_MODE_FILL);
+    pipelineBuilder.setCullMode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
+    pipelineBuilder.setMultisamplingNone();
+    pipelineBuilder.disableBlending();
+    pipelineBuilder.enableDepthtest(true, VK_COMPARE_OP_GREATER_OR_EQUAL);
+
+    pipelineBuilder.setColorAttachmentFormat(engine->drawImage.imageFormat);
+    pipelineBuilder.setDepthFormat(engine->depthImage.imageFormat);
+
+    pipelineBuilder.pipelineLayout = newLayout;
+    opaquePipeline.pipeline = pipelineBuilder.build(engine->device);
+
+    pipelineBuilder.enableBlendingAdditive();
+    pipelineBuilder.enableDepthtest(false, VK_COMPARE_OP_GREATER_OR_EQUAL);
+    
+    transparentPipeline.pipeline = pipelineBuilder.build(engine->device);
+
+    vkDestroyShaderModule(engine->device, meshVertexShader, nullptr);
+    vkDestroyShaderModule(engine->device, meshFragmentShader, nullptr);
+}
+
+void GLTFMetallicRoughness::clearResources(VkDevice device)
+{
+    vkDestroyDescriptorSetLayout(device, materialLayout, nullptr);
+    vkDestroyPipelineLayout(device, opaquePipeline.layout, nullptr);
+
+    vkDestroyPipeline(device, opaquePipeline.pipeline, nullptr);
+    vkDestroyPipeline(device, transparentPipeline.pipeline, nullptr);
+}
+
+MaterialInstance GLTFMetallicRoughness::writeMaterial(VkDevice device, MaterialPass pass, const MaterialResources& resources, DescriptorAllocator& descriptorAllocator)
+{
+    MaterialInstance matData{
+        .materialSet = descriptorAllocator.allocate(device, materialLayout),
+        .passType = pass
+    };
+    if (pass == MaterialPass::Transparent) {
+        matData.pipeline = &transparentPipeline;
+    }
+    else {
+        matData.pipeline = &opaquePipeline;
+    }
+    
+    writer.clear();
+    writer.writeBuffer(0, resources.dataBuffer, sizeof(MaterialConstants), resources.dataBufferOffset, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+    writer.writeImage(1, resources.colorImage.imageView, resources.colorSampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    writer.writeImage(2, resources.metalRoughImage.imageView, resources.metalRoughSampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    writer.updateSet(device, matData.materialSet);
+
+    return matData;
+}
+
+void MeshNode::draw(const glm::mat4& topMatrix, DrawContext& ctx)
+{
+    glm::mat4 nodeMatrix = topMatrix * globalTransform;
+
+    for (auto& surface : mesh->surfaces) {
+        RenderObject renderObject{
+            .indexCount = surface.count,
+            .firstIndex = surface.startIndex,
+            .indexBuffer = mesh->meshBuffers.indexBuffer.buffer,
+            .material = &surface.material->data,
+            .transform = nodeMatrix,
+            .vertexBufferAddress = mesh->meshBuffers.vertexBufferAddress
+        };
+
+        if (surface.material->data.passType == MaterialPass::Transparent) {
+            ctx.transparentSurfaces.push_back(renderObject);
+        }
+        else {
+            ctx.opaqueSurfaces.push_back(renderObject);
+        }
+    }
+
+    Node::draw(topMatrix, ctx);
 }

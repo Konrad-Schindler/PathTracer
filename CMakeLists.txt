@@ -78,13 +78,16 @@ set(SOURCES
     src/vk_initializers.cpp 
     src/vk_descriptors.cpp
     src/vk_pipelines.cpp
-    src/vk_loader.cpp)
+    src/vk_loader.cpp
+    src/renderable.cpp
+    src/camera.cpp)
 
 add_executable(${PROJECT_NAME} ${SOURCES})
 add_dependencies(${PROJECT_NAME} compile_shaders)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     vendor/vk_mem_alloc
+    vendor/stb_image
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${CMAKE_CURRENT_BINARY_DIR}/shaders

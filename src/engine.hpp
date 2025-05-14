@@ -6,6 +6,51 @@
 #include "vk_types.hpp"
 #include "vk_descriptors.hpp"
 #include "vk_loader.hpp"
+#include "camera.hpp"
+
+struct EngineStats {
+	float frametime;
+	int triangleCount;
+	int drawCallCount;
+	float sceneUpdateTime;
+	float meshDrawTime;
+};
+
+struct MeshNode : public Node {
+	std::shared_ptr<MeshAsset> mesh;
+
+	virtual void draw(const glm::mat4& topMatrix, DrawContext& ctx) override;
+};
+
+struct GLTFMetallicRoughness {
+
+	struct MaterialConstants {
+		glm::vec4 colorFactors;
+		glm::vec4 metalRoughFactors;
+		// padding to get 256 bytes (minimum requirement all gpus meet)
+		glm::vec4 extra[14];
+	};
+
+	struct MaterialResources {
+		AllocatedImage colorImage;
+		VkSampler colorSampler;
+		AllocatedImage metalRoughImage;
+		VkSampler metalRoughSampler;
+		VkBuffer dataBuffer;
+		uint32_t dataBufferOffset;
+	};
+
+	MaterialPipeline opaquePipeline;
+	MaterialPipeline transparentPipeline;
+
+	VkDescriptorSetLayout materialLayout;
+
+	DescriptorWriter writer;
+
+	void buildPipelines(Engine* engine);
+	void clearResources(VkDevice device);
+	MaterialInstance writeMaterial(VkDevice device, MaterialPass pass, const MaterialResources& resources, DescriptorAllocator& descriptorAllocator);
+};
 
 struct ComputePushConstants {
 	glm::vec4 data1;
@@ -37,11 +82,14 @@ struct DeletionQueue {
 };
 
 struct FrameData {
-	VkCommandPool commandPool;
-	VkCommandBuffer commandBuffer;
 	VkSemaphore swapchainSemaphore, renderSemaphor;
 	VkFence renderFence;
+
+	VkCommandPool commandPool;
+	VkCommandBuffer commandBuffer;
+	
 	DeletionQueue deletionQueue;
+	DescriptorAllocator frameDescriptors;
 };
 
 constexpr unsigned int FRAME_OVERLAP = 2;
@@ -85,11 +133,7 @@ struct Engine {
 	VkDescriptorSet drawImageDescriptors;
 	VkDescriptorSetLayout drawImageDescriptorLayout;
 
-	VkPipeline pipeline;
 	VkPipelineLayout pipelineLayout;
-
-	VkPipelineLayout trianglePipelineLayout;
-	VkPipeline trianglePipeline;
 
 	std::vector<ComputeEffect> backgroundEffects;
 	int currentBackgroundEffect{ 0 };
@@ -98,9 +142,32 @@ struct Engine {
 	VkCommandBuffer immediateCmdBuffer;
 	VkCommandPool immediateCommandPool;
 
-	GPUMeshBuffers rectangle;
-
 	std::vector<std::shared_ptr<MeshAsset>> testMeshes;
+
+	GPUSceneData sceneData;
+	VkDescriptorSetLayout gpuSceneDataDescriptorLayout;
+
+	// default textures
+	AllocatedImage whiteImage;
+	AllocatedImage blackImage;
+	AllocatedImage greyImage;
+	AllocatedImage missingTextureImage;
+
+	VkSampler defaultSamplerLinear;
+	VkSampler defaultSamplerNearest;
+	
+	VkDescriptorSetLayout singleImageDescriptorLayout;
+
+	MaterialInstance defaultData;
+	GLTFMetallicRoughness metalRoughMaterial;
+
+	DrawContext mainDrawContext;
+	std::unordered_map<std::string, std::shared_ptr<Node>> loadedNodes;
+
+	Camera camera;
+	std::unordered_map<std::string, std::shared_ptr<LoadedGLTF>> loadedScenes;
+
+	EngineStats stats;
 
 	static Engine& Get();
 
@@ -112,6 +179,12 @@ struct Engine {
 	FrameData& currentFrame();
 	void immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function);
 	GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
+
+	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage = VMA_MEMORY_USAGE_AUTO);
+	void destroyBuffer(const AllocatedBuffer& buffer);
+
+	AllocatedImage createImage(void* data, VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
+	void destroyImage(const AllocatedImage& image);
 
 private:
 	void initWindow();
@@ -130,7 +203,8 @@ private:
 	void drawBackground(VkCommandBuffer cmdBuffer);
 	void drawImGui(VkCommandBuffer cmdBuffer, VkImageView targetImageView);
 	void drawGeometry(VkCommandBuffer cmdBuffer);
-	void initTrianglePipeline();
-	AllocatedBuffer createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
-	void destroyBuffer(const AllocatedBuffer& buffer);
+
+	AllocatedImage createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
+
+	void updateScene();
 };
