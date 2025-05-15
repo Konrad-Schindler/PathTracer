@@ -16,7 +16,7 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/transform.hpp>
 
-constexpr bool enableValidationLayers = false;
+constexpr bool enableValidationLayers = true;
 const uint32_t WINDOW_WIDTH = 600;
 const uint32_t WINDOW_HEIGHT = 600;
 
@@ -57,7 +57,7 @@ void Engine::init()
     camera.pitch = 0;
     camera.yaw = 0;
 
-    std::string filePath = { "..\\..\\assets\\structure.glb" };
+    std::string filePath = { "..\\..\\assets\\monkey.glb" };
     auto file = loadGLTF(this, filePath);
 
     assert(file.has_value());
@@ -227,6 +227,7 @@ void Engine::resizeSwapchain()
     createSwapchain(windowExtent.width, windowExtent.height);
 
     resizeRequested = false;
+    tracer.render = true;
 }
 
 void Engine::initCommands()
@@ -295,7 +296,9 @@ void Engine::cleanup()
 
 void Engine::draw()
 {
-    updateScene();
+    if (renderMode == Rasterize) {
+        updateScene();
+    }
 
     VK_CHECK(vkWaitForFences(device, 1, &currentFrame().renderFence, true, 1'000'000'000));
 
@@ -320,21 +323,23 @@ void Engine::draw()
     drawExtent.height = std::min(swapchainExtent.height, drawImage.imageExtent.height) * renderScale;
 
     VK_CHECK(vkBeginCommandBuffer(cmdBuffer, &cmdBufferBeginInfo));
-    vkutil::transitionImage(cmdBuffer, drawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    
+    vkutil::transitionImage(cmdBuffer, drawImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 
-    drawBackground(cmdBuffer);
+    if (renderMode == Rasterize) {
+        rasterizerDraw(cmdBuffer);
+    }
+    else if (tracer.render) {
+        pathtracerDraw(cmdBuffer);
+        tracer.render = false;
+    }
 
-    vkutil::transitionImage(cmdBuffer, drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    vkutil::transitionImage(cmdBuffer, depthImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
-
-    drawGeometry(cmdBuffer);
-
-    vkutil::transitionImage(cmdBuffer, drawImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    vkutil::transitionImage(cmdBuffer, drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     vkutil::transitionImage(cmdBuffer, swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     vkutil::copyImagetoImage(cmdBuffer, drawImage.image, swapchainImages[swapchainImageIndex], drawExtent, swapchainExtent);
 
-    vkutil::transitionImage(cmdBuffer, drawImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+    // vkutil::transitionImage(cmdBuffer, drawImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
     vkutil::transitionImage(cmdBuffer, swapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
     drawImGui(cmdBuffer, swapchainImageViews[swapchainImageIndex]);
@@ -364,6 +369,7 @@ void Engine::draw()
         resizeRequested = true;
     }
     VK_CHECK(result);
+
     frameNumber++;
 }
 
@@ -387,9 +393,11 @@ void Engine::run()
         if (ImGui::Begin("Stats")) {
             ImGui::Text("frame time %f ms", stats.frametime);
             ImGui::Text("draw time %f ms", stats.meshDrawTime);
-            ImGui::Text("update time %f ms", stats.sceneUpdateTime);
-            ImGui::Text("triangles %i", stats.triangleCount);
-            ImGui::Text("draw calls %i", stats.drawCallCount);
+            if (renderMode == Rasterize) {
+                ImGui::Text("update time %f ms", stats.sceneUpdateTime);
+                ImGui::Text("triangles %i", stats.triangleCount);
+                ImGui::Text("draw calls %i", stats.drawCallCount);
+            }
         }
         ImGui::End();
 
@@ -534,7 +542,52 @@ void Engine::initPipelines()
 {
     initBackgroundPipelines();
 
+    initPathTracingPipelines();
+
     metalRoughMaterial.buildPipelines(this);
+}
+
+void Engine::initPathTracingPipelines()
+{
+    VkShaderModule pathtracingShader;
+    if (!vkutil::loadShaderModule("shaders/pathtracing_comp.spv", device, pathtracingShader)) {
+        std::cout << "Error when building the compute shader" << std::endl;
+    }
+
+    VkPushConstantRange pushConstant{
+        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+        .size = sizeof(ComputePushConstants),
+    };
+
+    VkPipelineLayoutCreateInfo layoutInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &drawImageDescriptorLayout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &pushConstant,
+    };
+
+    VK_CHECK(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &tracer.layout));
+
+    VkPipelineShaderStageCreateInfo stageInfo{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+        .module = pathtracingShader,
+        .pName = "main"
+    };
+
+    VkComputePipelineCreateInfo pipelineInfo{
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = stageInfo,
+        .layout = tracer.layout,
+    };
+
+    VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &tracer.pipeline));
+
+    vkDestroyShaderModule(device, pathtracingShader, nullptr);
+    deletionQueue.push([=]() {
+        vkDestroyPipeline(device, tracer.pipeline, nullptr);
+    });
 }
 
 void Engine::initBackgroundPipelines()
@@ -844,6 +897,32 @@ void Engine::drawGeometry(VkCommandBuffer cmdBuffer)
     auto end = std::chrono::system_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     stats.meshDrawTime = elapsed.count() / 1000.f;
+}
+
+void Engine::pathtracerDraw(VkCommandBuffer cmdBuffer)
+{
+    auto start = std::chrono::system_clock::now();
+    vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, tracer.pipeline);
+    vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, tracer.layout,
+        0, 1, &drawImageDescriptors, 0, nullptr);
+
+    vkCmdPushConstants(cmdBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &tracer.pushConstants);
+
+    vkCmdDispatch(cmdBuffer, std::ceil(drawExtent.width / 16.0), std::ceil(drawExtent.height / 16.0), 1);
+
+    auto end = std::chrono::system_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    stats.meshDrawTime = elapsed.count() / 1000.f;
+}
+
+void Engine::rasterizerDraw(VkCommandBuffer cmdBuffer)
+{
+    drawBackground(cmdBuffer);
+
+    vkutil::transitionImage(cmdBuffer, drawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    vkutil::transitionImage(cmdBuffer, depthImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+
+    drawGeometry(cmdBuffer);
 }
 
 AllocatedBuffer Engine::createBuffer(size_t allocSize, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage)

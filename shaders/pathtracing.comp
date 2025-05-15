@@ -1,0 +1,75 @@
+//GLSL version to use
+#version 460
+
+//size of a workgroup for compute
+layout (local_size_x = 16, local_size_y = 16) in;
+
+//descriptor bindings for the pipeline
+layout(rgba16f, set = 0, binding = 0) uniform image2D image;
+
+layout(push_constant) uniform constants {
+    vec4 data1;
+    vec4 data2;
+    vec4 data3;
+    vec4 data4;
+} PushConstants;
+
+struct ray {
+    vec3 origin;
+    vec3 direction;
+};
+
+struct hitrecord {
+    vec3 point;
+    vec3 normal;
+    double t;
+    bool front;
+};
+
+float hit_sphere(const vec3 center, float radius, const ray r) {
+    vec3 oc = center - r.origin;
+    float a = dot(r.direction, r.direction);
+    float b = dot(r.direction, oc);
+    float c = dot(oc, oc) - radius * radius;
+    float discriminant = b * b - a * c;
+    if (discriminant < 0) {
+        return -1;
+    } else {
+        return (b - sqrt(discriminant)) / a;     
+    }
+}
+
+vec3 ray_color(ray ray) {
+    vec3 unit_direction = normalize(ray.direction);
+    float a = 0.5 * (unit_direction.y + 1.0);
+    float t = hit_sphere(vec3(0, 0, -1), 0.5, ray);
+    if (t > 0) {
+        vec3 hit = ray.origin + t * ray.direction;
+        return 0.5 * (normalize(hit - vec3(0, 0, -1)) + 1);
+    }
+    return (1.0-a) * vec3(1.0, 1.0, 1.0) + a * vec3(0.5, 0.7, 1.0);
+}
+
+void main() 
+{
+    ivec2 size = imageSize(image);
+    ivec2 pixelCoord = ivec2(gl_GlobalInvocationID.xy);
+
+    // camera settings
+    float focal_length = 1.0;
+    float viewport_height = 2.0;
+    float viewport_width = viewport_height * (float(size.x)/size.y);
+    vec3 camera_center = vec3(0, 0, 0);
+
+    vec2 viewport = vec2(viewport_width, -viewport_height);
+    vec2 pixel_delta = viewport / size;
+    vec3 viewport_upper_left = camera_center - vec3(0, 0, focal_length) - vec3(viewport / 2, 0);
+    vec3 pixel = viewport_upper_left + vec3(pixelCoord * pixel_delta, 0); // maybe + 0.5 * vec3(pixel_delta, 0)
+
+    ray ray;
+    ray.origin = camera_center;
+    ray.direction = pixel - camera_center;
+
+    vec4 color = vec4(ray_color(ray), 1.0);	
+    imageStore(image, pixelCoord, color);
+}

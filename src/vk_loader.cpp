@@ -191,8 +191,9 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGLTF(Engine* engine, std::filesys
 		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 }
 	};
 
-	file.descriptorPool.init(engine->device, gltf.materials.size(), sizes);
-
+	if (gltf.materials.size() > 0) {
+		file.descriptorPool.init(engine->device, gltf.materials.size(), sizes);
+	}
 
 	for (fastgltf::Sampler& sampler : gltf.samplers) {
 		VkSamplerCreateInfo samplerInfo{
@@ -226,9 +227,14 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGLTF(Engine* engine, std::filesys
 		}
 	}
 
-	file.materialDataBuffer = engine->createBuffer(
-		sizeof(GLTFMetallicRoughness::MaterialConstants) * gltf.materials.size(),
-		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+	if (gltf.materials.size() > 0) {
+		file.materialDataBuffer = engine->createBuffer(
+			sizeof(GLTFMetallicRoughness::MaterialConstants) * gltf.materials.size(),
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+	}
+	else {
+		materials.push_back(std::make_shared<GLTFMaterial>());
+	}
 	int dataIndex = 0;
 	auto sceneMaterialConstants = (GLTFMetallicRoughness::MaterialConstants*)file.materialDataBuffer.info.pMappedData;
 
@@ -411,6 +417,8 @@ std::optional<std::shared_ptr<LoadedGLTF>> loadGLTF(Engine* engine, std::filesys
 			node->refreshTransform(glm::mat4{ 1.f });
 		}
 	}
+
+	std::cout << "Finished loading GLTF" << std::endl;
 
 	return scene;
 }

@@ -8,6 +8,26 @@
 #include "vk_loader.hpp"
 #include "camera.hpp"
 
+
+struct ComputePushConstants {
+	glm::vec4 data1;
+	glm::vec4 data2;
+	glm::vec4 data3;
+	glm::vec4 data4;
+};
+
+struct PathTracer {
+	bool render = true;
+	VkPipeline pipeline;
+	VkPipelineLayout layout;
+	ComputePushConstants pushConstants;
+};
+
+enum RenderMode {
+	PathTrace,
+	Rasterize,
+};
+
 struct EngineStats {
 	float frametime;
 	int triangleCount;
@@ -52,13 +72,6 @@ struct GLTFMetallicRoughness {
 	MaterialInstance writeMaterial(VkDevice device, MaterialPass pass, const MaterialResources& resources, DescriptorAllocator& descriptorAllocator);
 };
 
-struct ComputePushConstants {
-	glm::vec4 data1;
-	glm::vec4 data2;
-	glm::vec4 data3;
-	glm::vec4 data4;
-};
-
 struct ComputeEffect {
 	const char* name;
 	VkPipeline pipeline;
@@ -99,6 +112,7 @@ struct Engine {
 	bool initialized = false;
 	int frameNumber{ 0 };
 	float renderScale = 1.f;
+	RenderMode renderMode = PathTrace;
 
 	VkExtent2D windowExtent{ 800, 800 };
 	VkExtent2D drawExtent;
@@ -169,6 +183,8 @@ struct Engine {
 
 	EngineStats stats;
 
+	PathTracer tracer;
+
 	static Engine& Get();
 
 	void init();
@@ -197,12 +213,15 @@ private:
 	void initAllocator();
 	void initDescriptors();
 	void initPipelines();
+	void initPathTracingPipelines();
 	void initBackgroundPipelines();
 	void initImgui();
 	void initDefaultData();
 	void drawBackground(VkCommandBuffer cmdBuffer);
 	void drawImGui(VkCommandBuffer cmdBuffer, VkImageView targetImageView);
 	void drawGeometry(VkCommandBuffer cmdBuffer);
+	void pathtracerDraw(VkCommandBuffer cmdBuffer);
+	void rasterizerDraw(VkCommandBuffer cmdBuffer);
 
 	AllocatedImage createImage(VkExtent3D size, VkFormat format, VkImageUsageFlags usage, bool mipmapped = false);
 

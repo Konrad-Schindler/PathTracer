@@ -30,7 +30,7 @@ void Camera::configureGLFW(GLFWwindow* window)
 {
 	glfwSetKeyCallback(window, keyCallback);
 
-	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+	// glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	glfwSetCursorPosCallback(window, cursorCallback);
 }
 
